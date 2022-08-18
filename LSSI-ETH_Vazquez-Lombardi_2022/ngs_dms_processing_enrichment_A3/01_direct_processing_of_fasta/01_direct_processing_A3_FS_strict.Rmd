@@ -1,0 +1,564 @@
+---
+title: "genewiz_downstream_a3"
+author: "Fabrice Schlatter"
+date: "17.11.2021"
+output: html_document
+---
+
+#aim: do the genewiz analysis ourselves directly from the fastq data as their analysis has been inconsistent in unique sequences
+#runtime: ca 2h on i5 8gb ram (depending on exact read count)
+
+#to run this script, use eg SR04-A3-DMS-CD3_R1_001.fastq and SR04-A3-DMS-CD3_R2_001.fastq in pair, which are provided in the github or zenodo folder structure (or from SRA, BioProject: PRJNA869721)
+
+
+#load libraries
+```{r, warning=FALSE, message=FALSE}
+library(Biostrings)
+library(tidyverse)
+```
+
+
+#choose sample and sample overview
+to set path and define sample names
+```{r}
+##choose sample, set paths and give it a run description
+
+path <- "C:/Users/" #make sure the path ends with a /
+path <- '/Users/'
+setwd(path)
+#list.files(path)
+
+#Genewiz folder
+files <- sort(list.files(paste0(path, "00_gw_fasta_data/"), pattern="001.fastq", full.names = TRUE))
+files
+
+#extract sample names, assuming _ as delimiter
+sample.names <- sapply(strsplit(basename(files), "/"), `[`, 1)
+sample.names
+sample.names %>% length()
+
+#set indices for which samples
+i1 <- 3
+i2 <- 4
+sample_f <- sample.names[i1]
+sample_r <- sample.names[i2]
+sample_f
+sample_r
+
+sample_name <- sapply(strsplit(sample.names[i1], "_"), `[`, 1)
+sample_name
+# #sample name manual renaming
+# sample_name <- "a305-coc"
+# sample_name
+
+```
+
+
+#tracking table
+to check on how the reads are processed through the entire pipeline
+```{r}
+##constructing tracking table
+
+v_NA <- rep(NA, 1)
+
+track <- data.frame(sample_name = v_NA
+                    )
+
+track$sample_name <- sample_name
+
+#print
+track
+
+```
+
+
+#data read in
+one fasta file per sample
+```{r}
+##process raw genewiz reads
+
+#read fastq data file
+forward_reads <- readDNAStringSet(files[i1], format = "fastq")
+reverse_reads <- readDNAStringSet(files [i2], format = "fastq")
+
+# #write a smaller fastq for geneious visual
+# writeXStringSet(readDNAStringSet(files[1], format="fastq", nrec = 100), "output_f.fastq", format="fastq")
+# writeXStringSet(readDNAStringSet(files[1], format="fastq", nrec = 100), "output_r.fastq", format="fastq")
+
+#create a dataframe with the full fastq file content
+seq_name_f <- names(forward_reads)
+sequence_f <- paste(forward_reads)
+seq_len_f <- paste(forward_reads) %>% str_length()
+forward_reads_df <- data.frame(seq_name_f, DNA_f = as.character(sequence_f), seq_len_f = as.numeric(seq_len_f))
+
+#create a dataframe with the fastq file content
+seq_name_r <- names(reverse_reads)
+sequence_r <- paste(reverse_reads)
+seq_len_r <- paste(reverse_reads) %>% str_length()
+reverse_reads_df <- data.frame(seq_name_r, DNA_r = as.character(sequence_r), seq_len_r = as.numeric(seq_len_r))
+
+#combine
+raw_reads_df <- cbind(forward_reads_df, reverse_reads_df)
+#raw_reads_df %>% View()
+
+```
+
+
+#other version to read in and pool replicates, not needed here
+multiple fasta file per sample
+```{r}
+# ##process raw genewiz reads
+# 
+# #read fastq data file, with replicates pooled
+# for (i in seq(1, length(files), 2)){
+# 
+#   print(i)
+#   
+#   #read file
+#   forward_reads <- readDNAStringSet(files[i], format = "fastq")
+#   reverse_reads <- readDNAStringSet(files [i+1], format = "fastq")
+# 
+#   #create a dataframe with the full fastq file content
+#   seq_name_f <- names(forward_reads)
+#   sequence_f <- paste(forward_reads)
+#   seq_len_f <- paste(forward_reads) %>% str_length()
+#   forward_reads_df <- data.frame(seq_name_f, DNA_f = as.character(sequence_f), seq_len_f = as.numeric(seq_len_f))
+#   
+#   #create a dataframe with the fastq file content
+#   seq_name_r <- names(reverse_reads)
+#   sequence_r <- paste(reverse_reads)
+#   seq_len_r <- paste(reverse_reads) %>% str_length()
+#   reverse_reads_df <- data.frame(seq_name_r, DNA_r = as.character(sequence_r), seq_len_r = as.numeric(seq_len_r))
+#   
+#   #combine
+#   raw_reads_df_temp <- cbind(forward_reads_df, reverse_reads_df)
+#   print(nrow(raw_reads_df_temp))
+#   
+#   #rowbind
+#   if (i==1){
+#     raw_reads_df <- raw_reads_df_temp
+#   } else{
+#     raw_reads_df <- rbind(raw_reads_df, raw_reads_df_temp)
+#   }
+# }
+# 
+# print("total")
+# raw_reads_df %>% nrow()
+
+```
+
+
+```{r}
+#investigate the raw reads
+#https://help.basespace.illumina.com/articles/descriptive/fastq-files/
+
+#make sure the pairing is still correct: pair on same row
+raw_reads_df$ID_f <- sapply(strsplit(raw_reads_df$seq_name_f, " "),`[`, 1)
+raw_reads_df$ID_r <- sapply(strsplit(raw_reads_df$seq_name_r, " "),`[`, 1)
+
+#all are still paired
+raw_reads_df$pair <- (raw_reads_df$ID_f == raw_reads_df$ID_r)
+sum(raw_reads_df$pair)
+nrow(raw_reads_df)
+
+#most reads around 250b
+hist(raw_reads_df$seq_len_f)
+hist(raw_reads_df$seq_len_r)
+
+# #flash_filter: remove the sequences <10 and >500bp.
+# flash_df_f <- flash_df %>% filter(seq_len %in% 10:500)
+
+#reduce to important columns
+pre_data <- raw_reads_df[,c(9,2,5)]
+pre_data$pair %>% sum() #reads I keep so far (all)
+
+# raw_reads_df$seq_len_f %>% table()
+# raw_reads_df$seq_len_r %>% table()
+
+```
+
+
+#clean-up
+start clean up logic and select which sense and reads contain relevant info aka matching primers
+```{r}
+##reference sequences 5'->3'
+
+#Add TCR-specific sequences here
+#use constant up or downstream sequences of the mutagenesis regions directly 
+f_primer <- DNAString("ACTCGGCCCTTTATCTTTGC") #5' upstream CDR3b TRBV5-1
+r_primer <- DNAString("TTCGGGCCGGGCACCAGGCTCACGGTCACA") #3' downstream TRBJ-2
+
+#or use primer sets that were used for the amplicon pcr, may change depending on template used
+#f_primer <- DNAString("GAGGAGAACCCTGGACCTatg") #RVL144
+#r_primer <- DNAString("ggaacaccttgttcaggtcctc") #RVL145
+#r_primer <- DNAString("CTAGAGACCCCCAGCCTTACC") #RVL154
+
+
+#------------------
+
+#define target substrings for vcountpattern()
+
+id_length <- 20
+
+start_target_5_3 <- substr(f_primer, nchar(f_primer)-id_length+1, nchar(f_primer))
+end_target_5_3 <- substr(r_primer, 1, id_length)
+
+#print
+start_target_5_3
+end_target_5_3
+
+
+```
+
+
+```{r}
+#create reverse complement DNA
+pre_data$DNA_f_rc <- reverseComplement(DNAStringSet(pre_data$DNA_f))
+pre_data$DNA_r_rc <- reverseComplement(DNAStringSet(pre_data$DNA_r))
+
+
+#look at patterns
+DNA1 <- DNAStringSet(c(pre_data$DNA_f,
+                      pre_data$DNA_r))
+DNA2 <- DNAStringSet(c(pre_data$DNA_f_rc,
+                      pre_data$DNA_r_rc))
+
+DNA3 <- DNAStringSet(c(DNA1,
+                      DNA2))
+length(DNA3)
+
+f1 <- vcountPattern(start_target_5_3, DNA3)
+f1 %>% table()
+f2 <- vcountPattern(end_target_5_3, DNA3)
+f2 %>% table()
+#any irregularities?
+
+#control
+#which(f1==1)[1:10] %>% pre_data$DNA_f[.] #those have the primer_f
+
+#fill tracking table
+track$total_reads <- nrow(pre_data)
+track$total_rf <- length(DNA3)
+track$primer_f_1x <- sum(f1==1)
+track$primer_f_2xp <- sum(f1>1)
+track$primer_r_1x <- sum(f2==1)
+track$primer_r_2xp <- sum(f2>1)
+
+
+# #write a smaller fastq for geneious visual alignement
+# geneious_f <- which(f1==1)[1:100] %>% pre_data$DNA_f[.]
+# geneious_f <- DNAStringSet(geneious_f)
+# geneious_r <- which(r2==1)[1:70] %>% pre_data$DNA_f[.]
+# geneious_r <- DNAStringSet(geneious_r)
+# 
+# writeXStringSet(geneious_f, "geneious_f.fa", format="fasta")
+# writeXStringSet(geneious_r, "geneious_r.fa", format="fasta")
+
+```
+
+
+```{r}
+#from each seq and its revCompl, choose the one in sense with the 5'->3' target seqs
+
+#get the count for the patterns into pre_data
+print("start_target")
+fx <- vcountPattern(start_target_5_3, pre_data$DNA_f)
+fx %>% table()
+pre_data$start_target_DNA_f <- fx
+fx <- vcountPattern(start_target_5_3, pre_data$DNA_r)
+fx %>% table()
+pre_data$start_target_DNA_r <- fx
+
+fx <- vcountPattern(start_target_5_3, pre_data$DNA_f_rc)
+fx %>% table()
+pre_data$start_target_DNA_f_rc <- fx
+fx <- vcountPattern(start_target_5_3, pre_data$DNA_r_rc)
+fx %>% table()
+pre_data$start_target_DNA_r_rc <- fx
+
+
+print("end_target")
+fx <- vcountPattern(end_target_5_3, pre_data$DNA_f)
+fx %>% table()
+pre_data$end_target_DNA_f <- fx
+fx <- vcountPattern(end_target_5_3, pre_data$DNA_r)
+fx %>% table()
+pre_data$end_target_DNA_r <- fx
+
+fx <- vcountPattern(end_target_5_3, pre_data$DNA_f_rc)
+fx %>% table()
+pre_data$end_target_DNA_f_rc <- fx
+fx <- vcountPattern(end_target_5_3, pre_data$DNA_r_rc)
+fx %>% table()
+pre_data$end_target_DNA_r_rc <- fx
+
+```
+
+
+#this is the part which has most of the comp complexity and runs for 1+h, depending on read counts
+this part could use optimization
+```{r}
+#now write the criteria on those counts for which sense shall be chosen
+#ignore everything that has >1 count (very few info lost)
+#so for each read and revCompl read, chose which has more value/counts
+
+#for progress indicator
+step <- floor(nrow(pre_data) /100)
+steps <- seq(0, nrow(pre_data), step)
+
+#output df  
+pre_data$DNA_f_final <- NA
+pre_data$DNA_r_final <- NA
+
+#loop rowwise
+for (i in 1:nrow(pre_data)){
+  
+  #have a progress indicator
+  if (i %in% steps){
+    print(paste0(which(i==steps)-1, "% calculated..."))
+  }
+  
+  #read in all variables for this loop
+  f <- pre_data$DNA_f[i]
+  r <- pre_data$DNA_r[i]
+  frc <- pre_data$DNA_f_rc[i]
+  rrc <- pre_data$DNA_r_rc[i]
+  
+  st_f <- pre_data$start_target_DNA_f[i]
+  st_r <- pre_data$start_target_DNA_r[i]
+  st_frc <- pre_data$start_target_DNA_f_rc[i]
+  st_rrc <- pre_data$start_target_DNA_r_rc[i]
+  
+  et_f <- pre_data$end_target_DNA_f[i]
+  et_r <- pre_data$end_target_DNA_r[i]
+  et_frc <- pre_data$end_target_DNA_f_rc[i]
+  et_rrc <- pre_data$end_target_DNA_r_rc[i]
+  
+  
+    #conditions for DNA_f_final
+    if (st_f == 1 &
+        st_r == 0 &
+        st_frc == 0 &
+        st_rrc == 0){
+      pre_data$DNA_f_final[i] <- f
+    } else if ( st_f == 0 &  
+                st_r == 1 & 
+                st_frc == 0 &
+                st_rrc == 0 ){
+      pre_data$DNA_f_final[i] <- r
+    } else if ( st_f == 0 &  
+                st_r == 0 & 
+                st_frc == 1 &
+                st_rrc == 0 ){
+      pre_data$DNA_f_final[i] <- frc
+    } else if ( st_f == 0 &  
+                st_r == 0 & 
+                st_frc == 0 &
+                st_rrc == 1 ){
+      pre_data$DNA_f_final[i] <- rrc
+    } else if ( st_f == 0 & 
+                st_r == 0 &
+                st_frc == 0 &
+                st_rrc == 0){
+      pre_data$DNA_f_final[i] <- "none"
+
+    }
+    
+    
+    #conditions for DNA_r_final
+    if (et_f == 1 &  
+        et_r == 0 &
+        et_frc == 0 & 
+        et_rrc == 0){
+      pre_data$DNA_r_final[i] <- f
+    } else if (et_f == 0 &  
+               et_r == 1 &
+               et_frc == 0 & 
+               et_rrc == 0){
+      pre_data$DNA_r_final[i] <- r
+    } else if (et_f == 0 &  
+               et_r == 0 &
+               et_frc == 1 & 
+               et_rrc == 0){
+      pre_data$DNA_r_final[i] <- frc
+    } else if (et_f == 0 &  
+               et_r == 0 &
+               et_frc == 0 & 
+               et_rrc == 1){
+      pre_data$DNA_r_final[i] <- rrc
+    } else if (et_f == 0 &  
+               et_r == 0 &
+               et_frc == 0 & 
+               et_rrc == 0){
+      pre_data$DNA_r_final[i] <- "none"
+
+    }
+  
+}
+
+#reduce
+data <- pre_data[,c(1,14,15)]
+
+```
+
+
+```{r}
+#get some numbers on how this selection went
+
+nrow(data)
+
+nan <- is.na(data$DNA_f_final) %>% sum()
+none <- (data$DNA_f_final=="none") %>% sum(., na.rm = TRUE)
+multiple <- (data$DNA_f_final=="multiple") %>% sum(., na.rm = TRUE) #in this data, we dont check on the multiples, there is so few, that I just drop them
+good <- nrow(data) - nan - none - multiple
+good/nrow(data) #selected percentage
+multiple/nrow(data) #multiple percentage
+track$fwd_selection <- good #save in tracking table
+
+nan <- is.na(data$DNA_r_final) %>% sum()
+none <- (data$DNA_r_final=="none") %>% sum(., na.rm = TRUE)
+multiple <- (data$DNA_r_final=="multiple") %>% sum(., na.rm = TRUE)
+good <- nrow(data) - nan - none - multiple
+good/nrow(data) #selected percentage
+multiple/nrow(data) #multiple percentage
+track$rev_selection <- good #save in tracking table
+
+#complete
+complete <- (data$DNA_f_final != "none" & data$DNA_r_final != "none")
+is.na(complete) %>% sum()
+sum(complete, na.rm = TRUE)
+
+#only reverse reads useful?
+sum((data$DNA_r_final != "none"), na.rm = TRUE)
+
+```
+
+
+#--------------------------------------
+
+#now: TCR specific workflow
+reverse reads contain CDR3b, extract only that region using the constant region up and downstream of it.
+
+```{r}
+#extract region of interest
+
+#Add TCR-specific sequences here
+upstream_16bp <- DNAString("ACTCGGCCCTTTATCTTTGC") #upstream of mutagenesis region 
+cdr3_wt <- DNAString("GCCAGCAGCCCGAATATGGCGGATGAACAGTAC") #mutagenesis region
+downstream_36bp <- DNAString("TTCGGGCCGGGCACCAGGCT") #downstream mutagenesis region
+
+#plan 1: use upstream and downstream as usual, and only remove the inbetween after everything else (standard plan)
+upstream_20bp <- DNAString("ACTCGGCCCTTTATCTTTGC")
+downstream_20bp <- DNAString("TTCGGGCCGGGCACCAGGCT")
+
+#plan 2: use a more complex pattern matching: but not necessary, we want to be very stringent around it, since all mutations around it must be seq or pcr errors -> discard it all
+
+#here I lose the paired-end info as I only use the revReads that have the primer match and remove all the nones and nas
+start_target_5_3 <- upstream_20bp
+end_target_5_3 <- downstream_20bp
+
+#remove all none
+temp <- data$DNA_r_final #on reverse of forward? change accordingly
+ind <- which(temp != "none")
+length(temp)
+final_rev <- temp[ind] 
+length(final_rev) 
+#final_fwd <- reverseComplement(DNAStringSet(final_fwd))
+data_cdr3 <- data.frame(DNA = final_rev) 
+
+#locate and extract cdr3
+data_cdr3$startpos <- c(regexpr(start_target_5_3, data_cdr3$DNA))
+data_cdr3$startposmatchlenght <- attr(regexpr(start_target_5_3, data_cdr3$DNA), "match.length")
+data_cdr3$endpos <- c(regexpr(end_target_5_3, data_cdr3$DNA))
+data_cdr3$endposmatchlength <- attr(regexpr(end_target_5_3, data_cdr3$DNA), "match.length")
+
+data_cdr3$cdr3 <- substr(data_cdr3$DNA,
+                          (data_cdr3$startpos+data_cdr3$startposmatchlenght),
+                          (data_cdr3$endpos-1))
+data_cdr3$cdr3_20up <- substr(data_cdr3$DNA,
+                          (data_cdr3$startpos+data_cdr3$startposmatchlenght-20),
+                          (data_cdr3$startpos+data_cdr3$startposmatchlenght-1))
+data_cdr3$cdr3_20down <- substr(data_cdr3$DNA,
+                          (data_cdr3$endpos),
+                          (data_cdr3$endpos+20-1)) #change 20 if another length is chosen further up
+
+#extra if two mutagenesis sites: remove the inbetween region but keep the cdr2a and cdr3a concatenated for easier analysis
+#data_cdr3$cdr3b <- gsub(pattern = inbetween_120bp, replacement = "", x = data_cdr3$cdr3)
+#cdr3b_wt <- c(cdr2a_wt, cdr3a_wt)
+
+```
+
+
+```{r}
+#look at diversity
+data_cdr3$cdr3_20up %>% table()
+data_cdr3$cdr3_20down %>% table() %>% sort(.,decreasing = TRUE) %>% head()
+
+#upstream filter
+sum(as.character(data_cdr3$cdr3_20up) == as.character(upstream_20bp))
+data_cdr3_red <- data_cdr3[which(as.character(data_cdr3$cdr3_20up) == as.character(upstream_20bp)),]
+#downstream filter
+sum(as.character(data_cdr3_red$cdr3_20down) == as.character(downstream_20bp))
+data_cdr3_red <- data_cdr3_red[which(as.character(data_cdr3_red$cdr3_20down) == as.character(downstream_20bp)),]
+
+#check
+data_cdr3_red$cdr3_20up %>% table()
+data_cdr3_red$cdr3_20down %>% table()
+
+#check
+nchar(data_cdr3_red$cdr3) %>% table()
+data_cdr3_red <- data_cdr3_red[which(nchar(data_cdr3_red$cdr3) == 33),] #number of mut length, here CDR3b is 33nt
+
+#now its all cleaned up, look at cdr3b
+data_cdr3_red$cdr3 %>% table() %>% sort(.,decreasing = TRUE) %>% head(.,10)
+print("unique:")
+data_cdr3_red$cdr3 %>% unique() %>% length()
+print("wt read count:")
+sum(as.character(data_cdr3_red$cdr3) == as.character(cdr3_wt))
+print("unique read count:")
+nrow(data_cdr3_red) - sum(as.character(data_cdr3_red$cdr3) == as.character(cdr3_wt))
+
+#fill tracking table
+track$clean_cdr3b <- nrow(data_cdr3_red)
+track$unique_cdr3b <- data_cdr3_red$cdr3 %>% unique() %>% length()
+track$wt_reads <- (sum(as.character(data_cdr3_red$cdr3) == as.character(cdr3_wt)))
+track$variant_reads <- track$clean_cdr3b - track$wt_reads
+
+```
+
+
+```{r}
+#create output for downstream scripts
+#DNA seq, count, AA seq
+counts <- table(data_cdr3_red$cdr3) %>% as.data.frame()
+names(counts) <- c("cdr3", "n")
+sum(counts$n)
+counts$aa <- translate(DNAStringSet(counts$cdr3), if.fuzzy.codon = "solve") #potential X and N will be removed later
+
+#sort before output
+df_out <- counts[order(counts$n, decreasing = TRUE),]
+
+#create output
+path_out <- paste0(getwd(), "/output/")
+setwd(path_out)
+
+write.csv(df_out, file = paste0(paste0(sample_name), "_counts", ".csv"), row.names = FALSE)
+write.csv(track, file = paste0(paste0(sample_name), "_track_reads", ".csv"), row.names = FALSE)
+
+
+```
+
+
+```{r}
+stop()
+```
+
+
+```{r}
+#sandbox
+
+
+
+```
+
+

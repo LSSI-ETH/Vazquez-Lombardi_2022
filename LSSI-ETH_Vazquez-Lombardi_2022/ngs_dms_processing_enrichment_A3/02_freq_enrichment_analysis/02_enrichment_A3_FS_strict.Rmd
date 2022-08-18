@@ -1,0 +1,415 @@
+---
+title: "02_enrichment_A3_FS"
+author: "Fabrice Schlatter"
+date: "17.11.2021"
+output: html_document
+---
+
+#aim: do the enrichment based on 01_direct_processing_X outputs
+#based on the RVL Rscript and also does the downstream excel analysis which were used for the original DMS enrichement analysis
+#runtime: fast
+
+
+#load libraries
+```{r, warning=FALSE, message=FALSE}
+library(Biostrings)
+library(tidyverse)
+```
+
+
+#choose sample and sample overview
+to set path and define sample names
+```{r}
+##choose sample, set paths and give it a run description
+
+path <- "C:/Users/" #make sure the path ends with a /
+path <- '/Users/'
+
+setwd(path)
+#list.files(path)
+
+#Genewiz folder
+files <- sort(list.files(paste0(path, "01_direct_processing_of_fasta/output/"), pattern="counts", full.names = TRUE))
+files
+
+#extract sample names, assuming / as delimiter
+sample.names <- sapply(strsplit(basename(files), "/"), `[`, 1)
+sample.names
+sample.names %>% length()
+
+#set indices for which samples, match them to read in
+#doublecheck always that it matches!
+i1 <- 1
+i2 <- 2
+i3 <- 3
+
+print(paste(sample.names[i1], sample.names[i2], sample.names[i3]))
+
+#read in
+plasmid <- read.csv(files[i1])
+coculture <- read.csv(files[i2])
+binding <- read.csv(files[i3])
+
+#sample name / title
+sample_name <- sapply(strsplit(sample.names[i1], "-"), `[`, 1)
+sample_name
+#sample name manual renaming
+sample_name <- "a305"
+sample_name
+
+```
+
+
+```{r}
+#global variables
+#add wt sequence of the mutagenesis region here
+
+aa_wt <- AAString("ASSPNMADEQY")
+aa_wt <- AAString("IQSSPGGAGSYQLT")
+
+aa_wt
+
+```
+
+
+#boil down to freqencies per aa position
+
+###checkpoint###
+the next three chunks have to be run one by one for each sample (here: plasmid, coculture and binding). you do this by running only one out of the three lines in this next chunk and thus select which data should be saved in temp. then you run the entire second chunk based on that temp variable. then in the third chunks you again only run those lines that correspond to the right dataset and save it this way to a new variable. then you can go back to here, overwrite temp anew and continue as before.
+###
+
+#chunk1
+```{r}
+stop()
+
+#choose input, one out of three
+temp <- plasmid
+temp <- coculture
+temp <- binding
+
+stop()
+```
+
+#chunk2
+```{r}
+#reshape & quick overview, wt fraction
+temp_aa <- data.frame(aa = AAStringSet(temp$aa), n = temp$n)
+print("wt count:")
+wt_count <- temp_aa %>% filter(.,as.character(aa)==as.character(aa_wt)) %>% .$n %>% sum()
+wt_count
+print("wt freq:")
+wt_freq <- wt_count / sum(temp_aa$n)
+wt_freq
+#unique function was called on DNA seq and not AA seq: obviously there is still some on AA:
+table(temp_aa$aa) %>% sort(., decreasing = TRUE) %>% head(.,6)
+#merge them:
+temp_aa <- aggregate(n ~ aa,temp_aa, sum)
+temp_aa <- temp_aa[order(temp_aa$n, decreasing = TRUE),]
+
+#option to truncate (discarding info vs robustness against seq errors)
+temp_aa_t <- subset(temp_aa, n > 5)
+
+#clean up
+#a lot happened already in the processing pipeline e.g. based on length: (not necessary here anymore)
+nchar(temp_aa_t$aa) %>% table()
+#remove fuzzy X
+ind <- vcountPattern("X", temp_aa_t$aa, max.mismatch = 0)
+sum(ind)
+temp_aa_t <- temp_aa_t[which(as.logical(!ind)),]
+#could exclude * here too, but then adjust single_muts_missed in the loop below
+#actually dont do it because this is real info if it passes all other filters in the pipeline so far (ie real mRNA)
+
+#add freqency
+temp_aa_t$freq <- temp_aa_t$n / sum(temp_aa_t$n)
+sum(temp_aa_t$freq)
+
+#single mutations only (DMS) - (different to RVL)
+ind <- vcountPattern(aa_wt, temp_aa_t$aa, max.mismatch = 1)
+temp_aa_ts <- temp_aa_t[which(as.logical(ind)),]
+print("multi muts dropped:")
+sum(ind==0)
+print("single mut ratio:")
+sum(temp_aa_ts$freq) #ie while I lost a lot of unique seqs, they all had very low freq
+#readjust frequency - (different to RVL)
+temp_aa_ts$freq <- temp_aa_ts$n / sum(temp_aa_ts$n)
+sum(temp_aa_ts$freq)
+print("wt count readj:")
+wt_count <- temp_aa_ts %>% filter(.,as.character(aa)==as.character(aa_wt)) %>% .$n %>% sum()
+wt_count
+print("wt freq readj:")
+wt_freq <- wt_count / sum(temp_aa_ts$n)
+wt_freq
+
+#split aa
+temp_aa_tss <- strsplit(temp_aa_ts$aa, split = "") %>% as.data.frame %>% t %>% cbind(temp_aa_ts,.)
+
+
+#get the point mutations per position
+#this is based on the fact that we only have data with single point mutations now
+
+#start with wt
+temp_wt <- data.frame(aa = as.character(aa_wt),
+                      n = wt_count,
+                      freq = wt_freq,
+                      a = strsplit(as.character(aa_wt), split = ""),
+                      pos = c(1:nchar(aa_wt)))
+names(temp_wt)[4] <- "a"
+
+#append all other positions, loop over each pos, count if we see all single muts
+a_ref = strsplit(as.character(aa_wt), split = "")
+single_muts_missed <- length(a_ref[[1]])*20 #20 = 19aa (instead of the wt aa) + * (stop)
+for (pos in 1:nchar(aa_wt)){
+    #get info
+    temp_pos <- subset(temp_aa_tss, temp_aa_tss[pos+3] != a_ref[[1]][pos])
+    #print(paste0((nrow(temp_pos) == length(unique(temp_pos[,pos+3]))), nrow(temp_pos), length(unique(temp_pos[,pos+3]))))#check against double muts, must be equal/true
+    single_muts_missed <- single_muts_missed - nrow(temp_pos)
+    temp_pos <- temp_pos[,c(1,2,3,(pos+3))]
+    names(temp_pos)[4] <- "a"
+    temp_pos$pos <- pos
+    #append
+    temp_wt <- rbind(temp_wt, temp_pos)
+}
+print("single_muts_missed:")
+single_muts_missed
+
+#check on percentages
+#sum(temp_wt$freq)-sum(temp_wt$freq[1:14])+temp_wt$freq[1]
+#this is how they sum to 1, it is basically distorted by 13*wt_freq, as it was only accounted for once (13+1)
+
+##order nicely and according to heatmap design below, span matrix based on freq, a and pos
+#(however, ggplot seems to need the long df as input)
+temp_complete <- temp_wt[,c(4,5,3)]
+#change/add level order
+x_level_order <- as.character(c(1:nchar(aa_wt))) #length of CDR3b
+y_level_order <- c("A", "C", "D", "E", "F", "G", "H", "I", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y", "*")
+#apply
+temp_complete$a <- factor(temp_complete$a, levels = y_level_order)
+temp_complete$pos <- factor(temp_complete$pos, levels = x_level_order)
+temp_complete <- temp_complete[order(temp_complete$a, temp_complete$pos),]
+#wider format ie matrix
+temp_matrix <- pivot_wider(temp_complete, names_from = pos, values_from = freq)
+temp_matrix[is.na(temp_matrix)] <- 0 #set NA to 0
+#if A is not complete, pivotwider appends missing at the end...ie need to order the matrix again (also to be safe)
+temp_matrix <- temp_matrix[, c("a",x_level_order)]
+row.names(temp_matrix) <- temp_matrix$a
+temp_matrix <- temp_matrix[y_level_order,]
+#transform back into long format so that we have all the 0 entries included (RVL set NA to 0)
+temp_complete_0 <- pivot_longer(temp_matrix, cols = c(2:(nchar(aa_wt)+1)))
+names(temp_complete_0) <- names(temp_complete)
+#should be sorted, but to be safe
+temp_complete_0$a <- factor(temp_complete_0$a, levels = y_level_order)
+temp_complete_0$pos <- factor(temp_complete_0$pos, levels = x_level_order)
+temp_complete_0 <- temp_complete_0[order(temp_complete_0$a, temp_complete_0$pos),]
+
+
+```
+
+#chunk3
+```{r}
+stop()
+
+#save output of chuck to new vairables, one out of three
+df_plasmid <- temp_complete_0
+m_plasmid <- temp_matrix
+
+df_coculture <- temp_complete_0
+m_coculture <- temp_matrix
+
+df_binding <- temp_complete_0
+m_binding <- temp_matrix
+
+stop()
+```
+
+###checkpoint###
+at this point you should have run all three samples (here: plasmid, coculture and binding) seperately through the above three chunks.only then you can contine without any errors :)
+###
+
+#csv output
+for degeneratecodon package and or excel/prism heatmaps
+```{r}
+#create output
+path_out <- paste0(getwd(), "/output/")
+setwd(path_out)
+
+#addon for eg threshold
+add_on <- "_t5"
+
+#output
+write.csv(df_plasmid, file = paste0(sample_name, add_on, "_df_plasmid", ".csv"), row.names = FALSE)
+write.csv(m_plasmid, file = paste0(sample_name, add_on, "_m_plasmid", ".csv"), row.names = FALSE)
+
+write.csv(df_coculture, file = paste0(sample_name, add_on, "_df_coculture", ".csv"), row.names = FALSE)
+write.csv(m_coculture, file = paste0(sample_name, add_on, "_m_coculture", ".csv"), row.names = FALSE)
+
+write.csv(df_binding, file = paste0(sample_name, add_on, "_df_binding", ".csv"), row.names = FALSE)
+write.csv(m_binding, file = paste0(sample_name, add_on, "_m_binding", ".csv"), row.names = FALSE)
+
+```
+
+
+#-------------
+
+#dms analysis
+compare the freq matrixes and create a heatmap output (prep for enrichment analysis)
+```{r}
+#plot heatmaps
+#rectangles: https://stackoverflow.com/questions/13258454/marking-specific-tiles-in-geom-tile-geom-raster
+
+#specify which heatmap to plot, based on long df format
+toplot <- df_coculture
+
+##auxiliaries
+#level order for axis
+x_level_order <- as.character(c(1:14))
+y_level_order <- rev(c("A", "C", "D", "E", "F", "G", "H", "I", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y", "*"))
+#order
+toplot$a <- factor(toplot$a, levels = y_level_order)
+toplot$pos <- factor(toplot$pos, levels = x_level_order)
+#which get a frame (=wt)
+toplot$frames <- FALSE
+for (pos in 1:nchar(aa_wt)){
+  temp <- a_ref[[1]][pos]
+  toplot$frames[which(toplot$a == temp & toplot$pos == pos)] <- TRUE
+}
+#aux df
+frames <- toplot[toplot$frames, c("a", "pos")]
+frames$a <- as.integer(frames$a)
+frames$pos <- as.integer(frames$pos)
+
+
+#plot
+p1 = ggplot(data = toplot) +
+     geom_tile(aes(x = pos,
+                   y = a,
+                   fill = log(freq)), color = "white") +
+     scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = -5, na.value = "grey50", name = "log(Freq)") +
+     geom_rect(data=frames, size=1, fill=NA, colour="black", 
+               aes(xmin = pos-0.5, xmax = pos+0.5, ymin = a-0.5, ymax = a+0.5)) +
+    ggtitle("DMS Distribution") + xlab("Position") + ylab("Amino Acid") +
+    coord_equal() + theme_minimal()
+p1
+
+#non-log
+p1 = ggplot(data = toplot) +
+     geom_tile(aes(x = pos,
+                   y = a,
+                   fill = freq), color = "white") +
+     scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0.1, na.value = "grey50", name = "Freq") +
+     geom_rect(data=frames, size=1, fill=NA, colour="black", 
+               aes(xmin = pos-0.5, xmax = pos+0.5, ymin = a-0.5, ymax = a+0.5)) +
+    ggtitle("DMS Distribution") + xlab("Position") + ylab("Amino Acid") +
+    coord_equal() + theme_minimal()
+p1
+
+
+```
+
+```{r}
+#create output
+path_out <- paste0(getwd(), "/output/")
+setwd(path_out)
+
+tiff(filename = paste0(sample_name, add_on, "_plasmid", "_freq.tiff"), units="in", width=5, height=5, res=300)
+p1
+dev.off()
+
+```
+
+
+#-------------
+
+#enrichment analysis
+compare the different matrixes and create a heatmap output
+```{r}
+#plot heatmaps
+#rectangles: https://stackoverflow.com/questions/13258454/marking-specific-tiles-in-geom-tile-geom-raster
+
+ncol <- 12
+
+#specify which enrichment to plot, based on wide matrix format
+sample_toplot <- m_binding #based on a selection typically
+normalize_toplot <- m_plasmid #df_plasmid typically
+
+#normalize
+normed_toplot <- sample_toplot
+normed_toplot[,2:ncol] <- sample_toplot[,2:ncol]/normalize_toplot[,2:ncol]
+
+#covert back to long df format for ggplot
+toplot <- pivot_longer(normed_toplot, cols = c(2:ncol))
+names(toplot) <- c("a", "pos", "freq")
+
+##auxiliaries
+#level order for axis
+x_level_order <- as.character(c(1:14))
+y_level_order <- rev(c("A", "C", "D", "E", "F", "G", "H", "I", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y", "*"))
+#order
+toplot$a <- factor(toplot$a, levels = y_level_order)
+toplot$pos <- factor(toplot$pos, levels = x_level_order)
+#which get a frame (=wt)
+toplot$frames <- FALSE
+for (pos in 1:nchar(aa_wt)){
+  temp <- a_ref[[1]][pos]
+  toplot$frames[which(toplot$a == temp & toplot$pos == pos)] <- TRUE
+}
+#aux df
+frames <- toplot[toplot$frames, c("a", "pos")]
+frames$a <- as.integer(frames$a)
+frames$pos <- as.integer(frames$pos)
+
+
+#plot
+p2 = ggplot(data = toplot) +
+     geom_tile(aes(x = pos,
+                   y = a,
+                   fill = log(freq)), color = "white") +
+     scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = -1, na.value = "grey50", name = "log(ENR)") +
+     geom_rect(data=frames, size=1, fill=NA, colour="black", 
+               aes(xmin = pos-0.5, xmax = pos+0.5, ymin = a-0.5, ymax = a+0.5)) +
+    ggtitle("Enrichment") + xlab("Position") + ylab("Amino Acid") +
+    coord_equal() + theme_minimal()
+p2
+
+#non-log
+p2 = ggplot(data = toplot) +
+     geom_tile(aes(x = pos,
+                   y = a,
+                   fill = freq), color = "white") +
+     scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 8, na.value = "grey50", name = "ENR") +
+     geom_rect(data=frames, size=1, fill=NA, colour="black", 
+               aes(xmin = pos-0.5, xmax = pos+0.5, ymin = a-0.5, ymax = a+0.5)) +
+    ggtitle("Enrichment") + xlab("Position") + ylab("Amino Acid") +
+    coord_equal() + theme_minimal()
+p2
+
+
+```
+
+```{r}
+#create output
+path_out <- paste0(getwd(), "/output/")
+setwd(path_out)
+
+#addon for eg legend
+add_on2 <- ""
+
+tiff(filename = paste0(sample_name, add_on, add_on2, "_binding", "_enrichment.tiff"), units="in", width=5, height=5, res=300)
+p2
+dev.off()
+
+```
+
+
+```{r}
+stop()
+```
+
+
+```{r}
+#sandbox
+
+
+
+```
+
+
